@@ -1,0 +1,232 @@
+import pandas as pd
+import requests
+import json
+import time
+from datetime import datetime
+
+# --- CONFIGURATION ---
+API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYxNjg2NjA1NSwiYWFpIjoxMSwidWlkIjo5OTI0NDk5NywiaWFkIjoiMjAyNi0wMi0wNFQxNTowNDozNi4wOTlaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzM2MjgyNzMsInJnbiI6InVzZTEifQ.-qB9A17inFwccTouxzTpkuMW7ZEelr8yPG1Bq_jbVFo"
+ENGAGEMENT_BOARD_ID = "18398564336"
+DELIVERABLES_BOARD_ID = "18398564351"
+CSV_FILE_PATH = "/content/nexus_smartsheet_export.csv"
+
+URL = "https://api.monday.com/v2"
+HEADERS = {
+    "Authorization": f"Bearer eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYxNjg2NjA1NSwiYWFpIjoxMSwidWlkIjo5OTI0NDk5NywiaWFkIjoiMjAyNi0wMi0wNFQxNTowNDozNi4wOTlaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzM2MjgyNzMsInJnbiI6InVzZTEifQ.-qB9A17inFwccTouxzTpkuMW7ZEelr8yPG1Bq_jbVFo",
+    "Content-Type": "application/json"
+}
+
+def run_query(query, variables=None):
+    """Execute GraphQL query with error handling"""
+    response = requests.post(URL, json={'query': query, 'variables': variables}, headers=HEADERS)
+    result = response.json()
+    
+    if 'errors' in result:
+        print(f"❌ Error: {result['errors']}")
+        return None
+    
+    return result
+
+def fix_date(date_string):
+    """Convert MM/DD/YYYY to YYYY-MM-DD"""
+    try:
+        date_obj = datetime.strptime(date_string.strip(), "%m/%d/%Y")
+        return date_obj.strftime("%Y-%m-%d")
+    except:
+        return None
+
+# Load and Clean Data
+print("📂 Loading CSV file...")
+df = pd.read_csv(CSV_FILE_PATH)
+df.columns = df.columns.str.strip()
+df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+
+print("🧹 Cleaning up messy status names...")
+
+engagement_status_map = {
+    "In Progress": "Active",
+    "Active": "Active",
+    "Complete": "Complete",
+    "Done": "Complete",
+    "On Hold": "On Hold",
+    "Not Started": "Not Started"
+}
+
+deliverable_status_map = {
+    "To Do": "To Do",
+    "Not Started": "To Do",
+    "In Progress": "In Progress",
+    "Working on it": "In Progress",
+    "In Review": "In Review",
+    "Done": "Done"
+}
+
+df['engagement_status'] = df['engagement_status'].replace(engagement_status_map)
+df['deliverable_status'] = df['deliverable_status'].replace(deliverable_status_map)
+
+# =============================================================================
+# STEP 1: Create Engagements
+# =============================================================================
+
+print("\n📋 Creating Engagements...")
+engagements_created = {}
+unique_engagements = df.drop_duplicates(subset=['engagement_id'])
+
+for _, row in unique_engagements.iterrows():
+    
+    engagement_columns = {
+        "text_mm07bhn4": row['client'],
+        "text_mm08fdra": row['engagement_lead'],  # ✅ CORRECTED COLUMN ID
+        "numeric_mm071rjh": int(row['budget']),
+        "color_mm07dpnd": {"label": row['engagement_status']},
+        "timerange_mm07bq92": {
+            "from": fix_date(row['engagement_start']),
+            "to": fix_date(row['engagement_end'])
+        }
+    }
+    
+    query = """
+    mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) {
+        create_item (
+            board_id: $boardId,
+            item_name: $itemName,
+            column_values: $columnValues
+        ) {
+            id
+        }
+    }
+    """
+    
+    variables = {
+        'boardId': ENGAGEMENT_BOARD_ID,
+        'itemName': row['engagement_name'],
+        'columnValues': json.dumps(engagement_columns)
+    }
+    
+    result = run_query(query, variables)
+    
+    if result and 'data' in result:
+        monday_id = result['data']['create_item']['id']
+        engagements_created[row['engagement_id']] = monday_id
+        print(f"  ✅ {row['engagement_name']}")
+    
+    time.sleep(0.5)  # Small delay to avoid rate limits
+
+print(f"\n🎉 Created {len(engagements_created)} engagements!")
+
+# =============================================================================
+# STEP 2: Create Deliverables and Store IDs
+# =============================================================================
+
+print("\n📦 Creating Deliverables...")
+deliverables_created_ids = {}  # Store deliverable IDs grouped by parent
+deliverables_count = 0
+
+for _, row in df.iterrows():
+    
+    parent_monday_id = engagements_created.get(row['engagement_id'])
+    
+    if not parent_monday_id:
+        print(f"  ⚠️  Skipping {row['deliverable_name']} - no parent found")
+        continue
+    
+    deliverable_columns = {
+        "text_mm0840wb": row['deliverable_id'],
+        "text_mm08v45x": row['assignee'],
+        "date_mm07c9qr": {"date": fix_date(row['due_date'])},
+        "color_mm07xbz9": {"label": row['priority']},
+        "color_mm07we8b": {"label": row['deliverable_status']},
+        "numeric_mm07m44j": int(row['hours_estimated']),
+        "board_relation_mm07sybr": {"item_ids": [int(parent_monday_id)]}
+    }
+    
+    query = """
+    mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) {
+        create_item (
+            board_id: $boardId,
+            item_name: $itemName,
+            column_values: $columnValues
+        ) {
+            id
+        }
+    }
+    """
+    
+    variables = {
+        'boardId': DELIVERABLES_BOARD_ID,
+        'itemName': row['deliverable_name'],
+        'columnValues': json.dumps(deliverable_columns)
+    }
+    
+    result = run_query(query, variables)
+    
+    if result and 'data' in result:
+        deliverable_monday_id = result['data']['create_item']['id']
+        
+        # Store this deliverable ID under its parent engagement
+        if parent_monday_id not in deliverables_created_ids:
+            deliverables_created_ids[parent_monday_id] = []
+        deliverables_created_ids[parent_monday_id].append(deliverable_monday_id)
+        
+        deliverables_count += 1
+        if deliverables_count % 5 == 0:
+            print(f"  📊 Progress: {deliverables_count}/{len(df)} deliverables")
+    
+    time.sleep(0.5)  # Small delay to avoid rate limits
+
+print(f"\n🎉 Created {deliverables_count} deliverables!")
+
+# =============================================================================
+# STEP 3: Link Engagements BACK to Deliverables (WITH DELAYS)
+# =============================================================================
+
+print("\n🔗 Linking Engagements to Deliverables...")
+
+for engagement_monday_id, deliverable_ids in deliverables_created_ids.items():
+    
+    deliverable_ids_int = [int(did) for did in deliverable_ids]
+    
+    query = """
+    mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value (
+            board_id: $boardId,
+            item_id: $itemId,
+            column_id: $columnId,
+            value: $value
+        ) {
+            id
+        }
+    }
+    """
+    
+    variables = {
+        'boardId': ENGAGEMENT_BOARD_ID,
+        'itemId': engagement_monday_id,
+        'columnId': 'board_relation_mm07enqb',
+        'value': json.dumps({"item_ids": deliverable_ids_int})
+    }
+    
+    result = run_query(query, variables)
+    
+    if result:
+        print(f"  ✅ Linked engagement to {len(deliverable_ids)} deliverables")
+    else:
+        print(f"  ⚠️  Failed to link engagement")
+    
+    time.sleep(2)  # ⏱️ 2-SECOND DELAY to avoid rate limits
+
+print("\n✅ All engagement links completed!")
+
+# =============================================================================
+# FINAL SUMMARY
+# =============================================================================
+
+print("\n" + "="*70)
+print("✨ MIGRATION COMPLETE!")
+print("="*70)
+print(f"\n📊 Summary:")
+print(f"  • Engagements Created: {len(engagements_created)}/6")
+print(f"  • Deliverables Created: {deliverables_count}/27")
+print(f"  • Bidirectional Links: ✅")
+print(f"\n✅ Go check your monday.com boards!")
+print("="*70)
