@@ -1,0 +1,276 @@
+import pandas as pd
+import requests
+import json
+
+# --- CONFIGURATION ---
+API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYxNjg2NjA1NSwiYWFpIjoxMSwidWlkIjo5OTI0NDk5NywiaWFkIjoiMjAyNi0wMi0wNFQxNTowNDozNi4wOTlaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzM2MjgyNzMsInJnbiI6InVzZTEifQ.-qB9A17inFwccTouxzTpkuMW7ZEelr8yPG1Bq_jbVFo"
+ENGAGEMENT_BOARD_ID = "18398564336"
+DELIVERABLES_BOARD_ID = "18398564351"
+CSV_FILE_PATH = "/content/nexus_smartsheet_export.csv"
+
+URL = "https://api.monday.com/v2"
+HEADERS = {
+    "Authorization": f"Bearer eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYxNjg2NjA1NSwiYWFpIjoxMSwidWlkIjo5OTI0NDk5NywiaWFkIjoiMjAyNi0wMi0wNFQxNTowNDozNi4wOTlaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzM2MjgyNzMsInJnbiI6InVzZTEifQ.-qB9A17inFwccTouxzTpkuMW7ZEelr8yPG1Bq_jbVFo",
+    "Content-Type": "application/json"
+}
+
+def run_query(query, variables=None):
+    response = requests.post(URL, json={'query': query, 'variables': variables}, headers=HEADERS)
+    return response.json()
+
+# =============================================================================
+# STEP 1: Load Source CSV Data
+# =============================================================================
+
+print("\n" + "="*70)
+print("📊 MIGRATION VALIDATION REPORT")
+print("="*70)
+
+print("\n📂 Loading source CSV...")
+df = pd.read_csv(CSV_FILE_PATH)
+df.columns = df.columns.str.strip()
+df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+
+# Source data counts
+unique_engagements = df.drop_duplicates(subset=['engagement_id'])
+total_deliverables = len(df)
+total_budget = unique_engagements['budget'].sum()
+total_hours = df['hours_estimated'].sum()
+
+print(f"\n✅ Source Data (CSV):")
+print(f"   • Unique Engagements: {len(unique_engagements)}")
+print(f"   • Total Deliverables: {total_deliverables}")
+print(f"   • Total Budget: ${total_budget:,.0f}")
+print(f"   • Total Hours: {total_hours}")
+
+# =============================================================================
+# STEP 2: Retrieve Data from monday.com
+# =============================================================================
+
+print("\n🔍 Retrieving data from monday.com...")
+
+# Get Engagements
+eng_query = """
+query ($boardId: ID!) {
+    boards(ids: [$boardId]) {
+        items_page(limit: 100) {
+            items {
+                id
+                name
+                column_values {
+                    id
+                    text
+                    value
+                }
+            }
+        }
+    }
+}
+"""
+
+eng_result = run_query(eng_query, {'boardId': ENGAGEMENT_BOARD_ID})
+monday_engagements = eng_result['data']['boards'][0]['items_page']['items']
+
+# Get Deliverables
+del_result = run_query(eng_query, {'boardId': DELIVERABLES_BOARD_ID})
+monday_deliverables = del_result['data']['boards'][0]['items_page']['items']
+
+print(f"\n✅ monday.com Data:")
+print(f"   • Engagements Board: {len(monday_engagements)} items")
+print(f"   • Deliverables Board: {len(monday_deliverables)} items")
+
+# =============================================================================
+# STEP 3: Count Validation
+# =============================================================================
+
+print("\n" + "-"*70)
+print("📋 VALIDATION CHECKS")
+print("-"*70)
+
+# Check 1: Engagement Count
+eng_match = len(monday_engagements) == len(unique_engagements)
+print(f"\n{'✅' if eng_match else '❌'} CHECK 1: Engagement Count")
+print(f"   Expected: {len(unique_engagements)}")
+print(f"   Found: {len(monday_engagements)}")
+if not eng_match:
+    print(f"   ⚠️  MISMATCH: {abs(len(monday_engagements) - len(unique_engagements))} items difference")
+
+# Check 2: Deliverable Count
+del_match = len(monday_deliverables) == total_deliverables
+print(f"\n{'✅' if del_match else '❌'} CHECK 2: Deliverable Count")
+print(f"   Expected: {total_deliverables}")
+print(f"   Found: {len(monday_deliverables)}")
+if not del_match:
+    print(f"   ⚠️  MISMATCH: {abs(len(monday_deliverables) - total_deliverables)} items difference")
+
+# =============================================================================
+# STEP 4: Budget Validation
+# =============================================================================
+
+print(f"\n🔍 CHECK 3: Budget Totals")
+monday_total_budget = 0
+
+for item in monday_engagements:
+    for col in item['column_values']:
+        if col['id'] == 'numeric_mm071rjh':  # Budget column
+            if col['text']:
+                try:
+                    monday_total_budget += float(col['text'].replace(',', ''))
+                except:
+                    pass
+
+budget_match = monday_total_budget == total_budget
+print(f"{'✅' if budget_match else '⚠️ '} Budget Validation")
+print(f"   Expected: ${total_budget:,.0f}")
+print(f"   Found: ${monday_total_budget:,.0f}")
+if not budget_match:
+    print(f"   Difference: ${abs(monday_total_budget - total_budget):,.0f}")
+
+# =============================================================================
+# STEP 5: Hours Validation
+# =============================================================================
+
+print(f"\n⏱️  CHECK 4: Hours Totals")
+monday_total_hours = 0
+
+for item in monday_deliverables:
+    for col in item['column_values']:
+        if col['id'] == 'numeric_mm07m44j':  # Hours column
+            if col['text']:
+                try:
+                    monday_total_hours += int(col['text'])
+                except:
+                    pass
+
+hours_match = monday_total_hours == total_hours
+print(f"{'✅' if hours_match else '⚠️ '} Hours Validation")
+print(f"   Expected: {total_hours} hours")
+print(f"   Found: {monday_total_hours} hours")
+if not hours_match:
+    print(f"   Difference: {abs(monday_total_hours - total_hours)} hours")
+
+# =============================================================================
+# STEP 6: Orphaned Deliverables Check
+# =============================================================================
+
+print(f"\n🔗 CHECK 5: Orphaned Deliverables")
+orphaned_count = 0
+orphaned_names = []
+
+for item in monday_deliverables:
+    has_link = False
+    for col in item['column_values']:
+        if col['id'] == 'board_relation_mm07sybr':  # Link column
+            if col['value'] and col['value'] != '':
+                try:
+                    value_data = json.loads(col['value'])
+                    if value_data.get('linkedPulseIds'):
+                        has_link = True
+                        break
+                except:
+                    pass
+    
+    if not has_link:
+        orphaned_count += 1
+        orphaned_names.append(item['name'])
+
+print(f"{'✅' if orphaned_count == 0 else '❌'} Orphaned Deliverables")
+print(f"   Found: {orphaned_count} deliverables without engagement links")
+if orphaned_count > 0:
+    print(f"   Items: {', '.join(orphaned_names[:5])}")
+    if orphaned_count > 5:
+        print(f"   ... and {orphaned_count - 5} more")
+
+# =============================================================================
+# STEP 7: Missing Data Check
+# =============================================================================
+
+print(f"\n📝 CHECK 6: Data Completeness")
+
+missing_assignees = []
+missing_dates = []
+missing_statuses = []
+
+for item in monday_deliverables:
+    col_dict = {col['id']: col for col in item['column_values']}
+    
+    # Check assignee
+    if not col_dict.get('text_mm08v45x', {}).get('text'):
+        missing_assignees.append(item['name'])
+    
+    # Check due date
+    if not col_dict.get('date_mm07c9qr', {}).get('text'):
+        missing_dates.append(item['name'])
+    
+    # Check status
+    if not col_dict.get('color_mm07we8b', {}).get('text'):
+        missing_statuses.append(item['name'])
+
+print(f"{'✅' if len(missing_assignees) == 0 else '⚠️ '} Assignees: {len(missing_assignees)} missing")
+print(f"{'✅' if len(missing_dates) == 0 else '⚠️ '} Due Dates: {len(missing_dates)} missing")
+print(f"{'✅' if len(missing_statuses) == 0 else '⚠️ '} Statuses: {len(missing_statuses)} missing")
+
+if missing_assignees:
+    print(f"   Missing assignees: {', '.join(missing_assignees[:3])}")
+if missing_dates:
+    print(f"   Missing dates: {', '.join(missing_dates[:3])}")
+
+# =============================================================================
+# STEP 8: Engagement Names Verification
+# =============================================================================
+
+print(f"\n🏢 CHECK 7: Engagement Names Match")
+
+csv_eng_names = set(unique_engagements['engagement_name'].values)
+monday_eng_names = set([item['name'] for item in monday_engagements])
+
+missing_in_monday = csv_eng_names - monday_eng_names
+extra_in_monday = monday_eng_names - csv_eng_names
+
+names_match = len(missing_in_monday) == 0 and len(extra_in_monday) == 0
+print(f"{'✅' if names_match else '⚠️ '} Engagement Names")
+
+if missing_in_monday:
+    print(f"   ⚠️  Missing from monday.com: {missing_in_monday}")
+if extra_in_monday:
+    print(f"   ⚠️  Extra in monday.com: {extra_in_monday}")
+
+# =============================================================================
+# FINAL SUMMARY
+# =============================================================================
+
+print("\n" + "="*70)
+
+all_checks_passed = (
+    eng_match and 
+    del_match and 
+    budget_match and 
+    hours_match and 
+    orphaned_count == 0 and
+    len(missing_assignees) == 0 and
+    len(missing_dates) == 0 and
+    names_match
+)
+
+if all_checks_passed:
+    print("🎉 ALL VALIDATION CHECKS PASSED!")
+    print("✅ Migration is 100% successful")
+else:
+    print("⚠️  VALIDATION COMPLETED WITH WARNINGS")
+    print("📝 Review the issues above")
+
+print("="*70)
+
+# Summary table
+print("\n📊 SUMMARY TABLE:")
+print("-"*70)
+print(f"{'Metric':<30} | {'Expected':<15} | {'Found':<15} | {'Status':<10}")
+print("-"*70)
+print(f"{'Engagements':<30} | {len(unique_engagements):<15} | {len(monday_engagements):<15} | {'✅' if eng_match else '❌'}")
+print(f"{'Deliverables':<30} | {total_deliverables:<15} | {len(monday_deliverables):<15} | {'✅' if del_match else '❌'}")
+print(f"{'Total Budget':<30} | ${total_budget:>14,.0f} | ${monday_total_budget:>14,.0f} | {'✅' if budget_match else '⚠️'}")
+print(f"{'Total Hours':<30} | {total_hours:<15} | {monday_total_hours:<15} | {'✅' if hours_match else '⚠️'}")
+print(f"{'Orphaned Items':<30} | {0:<15} | {orphaned_count:<15} | {'✅' if orphaned_count == 0 else '❌'}")
+print("-"*70)
+
+print("\n✅ Validation complete! Review your monday.com boards.")
