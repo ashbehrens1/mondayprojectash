@@ -5,14 +5,14 @@ import time
 from datetime import datetime
 
 # --- CONFIGURATION ---
-API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYxNjg2NjA1NSwiYWFpIjoxMSwidWlkIjo5OTI0NDk5NywiaWFkIjoiMjAyNi0wMi0wNFQxNTowNDozNi4wOTlaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzM2MjgyNzMsInJnbiI6InVzZTEifQ.-qB9A17inFwccTouxzTpkuMW7ZEelr8yPG1Bq_jbVFo"
+API_KEY = "{ENTER API KEY HERE}"
 ENGAGEMENT_BOARD_ID = "18398564336"
 DELIVERABLES_BOARD_ID = "18398564351"
 CSV_FILE_PATH = "/content/nexus_smartsheet_export.csv"
 
 URL = "https://api.monday.com/v2"
 HEADERS = {
-    "Authorization": f"Bearer eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYxNjg2NjA1NSwiYWFpIjoxMSwidWlkIjo5OTI0NDk5NywiaWFkIjoiMjAyNi0wMi0wNFQxNTowNDozNi4wOTlaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzM2MjgyNzMsInJnbiI6InVzZTEifQ.-qB9A17inFwccTouxzTpkuMW7ZEelr8yPG1Bq_jbVFo",
+    "Authorization": f"Bearer {ENTER API KEY HERE}",
     "Content-Type": "application/json"
 }
 
